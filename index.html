@@ -588,6 +588,24 @@ function showPage(id) {
 function normalize(s) {
   return (s||'').toLowerCase().replace(/[^a-z0-9]/g,'').trim();
 }
+// Levenshtein distance
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({length:m+1},(_,i)=>Array.from({length:n+1},(_,j)=>i===0?j:j===0?i:0));
+  for(let i=1;i<=m;i++) for(let j=1;j<=n;j++)
+    dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
+  return dp[m][n];
+}
+// Forgiving match: allows small typos
+function isCloseEnough(guess, answer) {
+  const g = normalize(guess), a = normalize(answer);
+  if (g === a) return true;
+  const maxDist = a.length >= 6 ? 2 : (a.length >= 3 ? 1 : 0);
+  if (levenshtein(g, a) <= maxDist) return true;
+  if (a.includes(g) && g.length >= 3) return true;
+  if (g.includes(a) && a.length >= 3) return true;
+  return false;
+}
 function getMaxPoints(hintsUsed) {
   let pts = 10;
   if (hintsUsed.includes('genre')) pts -= 2;
@@ -885,8 +903,10 @@ function renderHints(round, playerHints, cr) {
     const btn = document.createElement('button');
     btn.className = 'hint-btn' + (used ? ' used' : '');
     btn.textContent = used ? '✓ ' + label.split(' ')[0] : label;
-    if (!used && !myGuessSubmitted) btn.onclick = () => requestHint(key, cr);
-    else btn.disabled = !used;
+    // derive submitted state from round data, not stale module var
+    const hasSubmitted = !!round.guesses?.[playerId];
+    if (!used && !hasSubmitted) btn.onclick = () => requestHint(key, cr);
+    else if (!used) btn.disabled = true;
     bar.appendChild(btn);
     if (used) {
       const span = document.createElement('span');
@@ -1035,7 +1055,7 @@ async function autoReveal(round, cr, room) {
   Object.entries(guesses).forEach(([pid, g]) => {
     const hintsUsed = Object.keys(round.playerHints?.[pid] || {});
     const maxPts = getMaxPoints(hintsUsed);
-    const correct = normalize(g.guess) === normalize(movieTitle);
+    const correct = isCloseEnough(g.guess, movieTitle);
     const pts = correct ? maxPts : 0;
     updates[`rooms/${currentRoom}/rounds/${cr}/guesses/${pid}/correct`] = correct;
     updates[`rooms/${currentRoom}/rounds/${cr}/guesses/${pid}/pts`] = pts;
