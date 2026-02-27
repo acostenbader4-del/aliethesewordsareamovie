@@ -553,6 +553,21 @@ let qrInstance = null;
 // Track which movie IDs have been used so we don't repeat
 let usedMovieIds = [];
 
+// ── SESSION PERSISTENCE (for rejoin) ──
+function saveSession() {
+  if (!currentRoom || !playerId) return;
+  sessionStorage.setItem('twaam_session', JSON.stringify({
+    currentRoom, playerId, playerName, isHost
+  }));
+}
+function clearSession() {
+  sessionStorage.removeItem('twaam_session');
+}
+function loadSession() {
+  try { return JSON.parse(sessionStorage.getItem('twaam_session')); }
+  catch(e) { return null; }
+}
+
 // ── Firebase init ──
 try {
   app = initializeApp(firebaseConfig);
@@ -644,6 +659,7 @@ function checkURLParams() {
 // ── HOME ──
 window.goHome = () => {
   stopListener();
+  clearSession();
   currentRoom = null; isHost = false; myHintsUsed = []; myGuessSubmitted = false; usedMovieIds = [];
   showPage('home');
 };
@@ -681,6 +697,7 @@ window.createRoom = async () => {
   });
 
   showPage('lobby');
+  saveSession();
   document.getElementById('lobby-room-code').textContent = code;
   generateQR(code);
   document.getElementById('lobby-host-name-display').textContent = `Host: ${playerName} (you)`;
@@ -706,6 +723,7 @@ window.joinRoom = async () => {
 
   await update(ref(db, 'rooms/' + code + '/players/' + playerId), { name: playerName, score: 0 });
 
+  saveSession();
   showPage('lobby');
   startListener(code);
 };
@@ -1132,6 +1150,7 @@ window.leaveRoom = async () => {
     await remove(ref(db, `rooms/${currentRoom}/players/${playerId}`));
   }
   stopListener();
+  clearSession();
   currentRoom = null; isHost = false;
   showPage('home');
 };
@@ -1244,9 +1263,69 @@ window.confirmDelete = async () => {
   }
 };
 
+// ── REJOIN ON LOAD ──
+async function attemptRejoin() {
+  const sess = loadSession();
+  if (!sess || !sess.currentRoom || !sess.playerId) {
+    checkURLParams();
+    return;
+  }
+
+  // Check if room still exists in Firebase
+  const snap = await get(ref(db, 'rooms/' + sess.currentRoom));
+  if (!snap.exists()) {
+    clearSession();
+    checkURLParams();
+    return;
+  }
+
+  const room = snap.val();
+
+  // For hosts: verify host id still matches
+  if (sess.isHost) {
+    if (room.host !== sess.playerId) { clearSession(); checkURLParams(); return; }
+    currentRoom = sess.currentRoom;
+    playerId = sess.playerId;
+    playerName = sess.playerName;
+    isHost = true;
+    // Pre-fill name input
+    document.getElementById('player-name-input').value = playerName;
+    showToast('👋 Welcome back, ' + playerName + '! Rejoining as host…');
+    startListener(currentRoom);
+    return;
+  }
+
+  // For players: check they're still in the players list
+  const stillInRoom = room.players && room.players[sess.playerId];
+  if (!stillInRoom && room.status !== 'lobby') {
+    // Game is in progress and player was removed — can try to re-add them
+    // Only re-add if game is still playing (not gameover)
+    if (room.status === 'gameover') { clearSession(); checkURLParams(); return; }
+  }
+
+  currentRoom = sess.currentRoom;
+  playerId = sess.playerId;
+  playerName = sess.playerName;
+  isHost = false;
+
+  // Pre-fill name input
+  document.getElementById('player-name-input').value = playerName;
+
+  // Re-add to players if missing (e.g. kicked by a refresh)
+  if (!stillInRoom) {
+    const score = 0; // fresh join mid-game, they lost their score — could improve later
+    await update(ref(db, 'rooms/' + currentRoom + '/players/' + playerId), {
+      name: playerName, score
+    });
+  }
+
+  showToast('👋 Welcome back, ' + playerName + '! Rejoining…');
+  startListener(currentRoom);
+}
+
 // ── Init ──
 clearMovieForm();
-checkURLParams();
+attemptRejoin();
 </script>
 </body>
 </html>
